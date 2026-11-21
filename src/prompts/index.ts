@@ -1930,14 +1930,25 @@ const shellWord = (a: string) => (a === "" ? '""' : /^[\w@%+=:,./-]+$/.test(a) ?
 
 const FIXED_DIR = "One fixed empty directory under the app's cache directory, the same for every call and every account (the CLI puts its working directory into its system prompt, so a directory per call would defeat the prompt cache), with no project instructions in it";
 
-/** Which provider answers this host's calls, so the page describes the calls it actually makes (src/agents/compatible.ts). */
-export type ProviderMode = { model: "claude" | "compatible"; classifier: "jev" | "compatible" | "decisions" };
+/**
+ * Which provider answers this host's calls, so the page describes the calls it actually makes (src/agents/compatible.ts,
+ * src/agents/decisions.ts). `invalid` carries the configuration's reason: the page shows that instead of naming a provider
+ * that is not the one running.
+ */
+export type ProviderMode = {
+  model: "claude" | "compatible" | "invalid";
+  classifier: "jev" | "compatible" | "decisions" | "invalid";
+  modelProblem?: string;
+  classifierProblem?: string;
+};
 
 function settings(p: ClaudePrompt | JevPrompt, mode: ProviderMode): PromptInfo["settings"] {
   const l = p.limits;
   const apiModel = p.runner === "claude" && mode.model === "compatible";
+  const badModel = p.runner === "claude" && mode.model === "invalid";
   const apiClassifier = p.runner === "jev" && mode.classifier === "compatible";
   const decisionsClassifier = p.runner === "jev" && mode.classifier === "decisions";
+  const badClassifier = p.runner === "jev" && mode.classifier === "invalid";
   const s: PromptInfo["settings"] = [
     ...(p.runner === "claude" && !apiModel ? [{ label: "Effort", value: p.effort }] : []),
     { label: "Items per call", value: String(l.perCall) },
@@ -1949,6 +1960,8 @@ function settings(p: ClaudePrompt | JevPrompt, mode: ProviderMode): PromptInfo["
   if (apiModel) s.push({ label: "Provider", value: `The compatible provider (src/agents/compatible.ts): ${p.sandbox ? "a loop of at most the Max turns below, with Read, Grep and Glob on the checkout and the workspace (real paths confined to them), and mcp__build__check when the stage gives one" : "one request, no tools"}; no sandbox process, no item tools, no explorer subagent, no images, no follow-up fix turn` });
   if (apiClassifier) s.push({ label: "Provider", value: "The compatible classifier: Jev's request, sent as one JSON request to the configured model (src/agents/compatible.ts)" });
   if (decisionsClassifier) s.push({ label: "Provider", value: "The decisions endpoint: Jev's questions sent as one Decisions request (a predicate per yes-probability, a choice with the criteria as its options; src/agents/decisions.ts). It reports no tokens, so the call's usage row carries none" });
+  if (badModel) s.push({ label: "Provider", value: `Model calls cannot run: ${mode.modelProblem ?? "the model provider is not configured"}; the fallback is not used silently` });
+  if (badClassifier) s.push({ label: "Provider", value: `The typed decisions cannot run: ${mode.classifierProblem ?? "the classifier is not configured"}; the fallback model does their work` });
   if (p.runner === "claude" && p.sandbox && !apiModel) {
     s.push({ label: "Tools", value: `${p.sandbox.tools.join(", ")} on a read-only checkout (the pull request's head commit, or the base commit for Fix) at ${REPO_PATH}; no tools (and no checkout) when the tree is too large, the head moved or the sandbox is unavailable` });
     s.push({ label: "Max turns", value: String(p.sandbox.maxTurns) });
@@ -1961,9 +1974,9 @@ function settings(p: ClaudePrompt | JevPrompt, mode: ProviderMode): PromptInfo["
       s.push({ label: "Explorer", value: `The ${AGENT_TOOL} tool starts one subagent, ${EXPLORER}, on ${EXPLORER_MODEL} with ${EXPLORER_TOOLS.join(", ")} (definition read-only at ${AGENTS_PATH}, --agents); its tokens are recorded as extra rows of the call's usage` });
       s.push({ label: "Item tools", value: `When an item snapshot exists, a read-only MCP server (--mcp-config ${MCP_PATH}) with search_items, item, similar_items and pr_diff over the synced issues and pull requests of public repositories (tools mcp__items__*, allowed for the call and the explorer); without a snapshot the call has none` });
     }
-  } else if (p.runner === "claude" && !apiModel) s.push({ label: "Where", value: `${FIXED_DIR}; the prompt's fixed text is the system prompt (--system-prompt, replacing the CLI's own) and the item data is on stdin` });
+  } else if (p.runner === "claude" && !apiModel && !badModel) s.push({ label: "Where", value: `${FIXED_DIR}; the prompt's fixed text is the system prompt (--system-prompt, replacing the CLI's own) and the item data is on stdin` });
   if (p.runner === "claude" && !p.sandbox) s.push({ label: "Tools", value: "None" });
-  else if (p.runner === "jev" && !apiClassifier && !decisionsClassifier) s.push({ label: "Where", value: "Request on stdin as one line of JSON" });
+  else if (p.runner === "jev" && !apiClassifier && !decisionsClassifier && !badClassifier) s.push({ label: "Where", value: "Request on stdin as one line of JSON" });
   if (p.extra) s.push(...p.extra);
   return s;
 }
@@ -1980,7 +1993,8 @@ function info(p: ClaudePrompt | JevPrompt, mode: ProviderMode): PromptInfo {
     const parts = claudeParts(id, ex.input, p.sandbox !== undefined);
     return {
       ...base,
-      command: mode.model === "compatible"
+      command: mode.model === "invalid" ? "— (the model provider is not configured)"
+        : mode.model === "compatible"
         ? `POST <compatible API>/chat/completions${p.sandbox ? ", then Read/Grep/Glob turns" : ""}`
         : (p.sandbox ? sandboxPreview(claudeArgs(id, p.models[0]!, true, undefined, undefined, false, p.lint === true), p.sandbox.workspace === true, p.lint === true) : ["claude", ...claudeArgs(id, p.models[0]!, false, undefined, "<system prompt, shown above>")]).map(shellWord).join(" "),
       template: p.template,
@@ -1994,7 +2008,8 @@ function info(p: ClaudePrompt | JevPrompt, mode: ProviderMode): PromptInfo {
   const item = SAMPLE_ITEMS[0]!;
   return {
     ...base,
-    command: mode.classifier === "compatible" ? "POST <compatible API>/chat/completions"
+    command: mode.classifier === "invalid" ? "— (the classifier is not configured)"
+      : mode.classifier === "compatible" ? "POST <compatible API>/chat/completions"
       : mode.classifier === "decisions" ? "POST <decisions endpoint>/decisions"
       : ["jev", ...JEV_ARGS].join(" "),
     template: JSON.stringify(p.request, null, 2),

@@ -27,12 +27,15 @@ const COMMIT = ((): string | null => {
 
 export function prompts(db: DatabaseSync): PromptsReport {
   // Which provider answers now, so the page describes the calls this host makes, not the default ones. In the user-local
-  // mode neither provider runs here: helpers run the calls, with the command shown.
-  if (inferenceMode(db) === "user-local") return promptsReport(COMMIT);
-  const classifier = classifierProvider().provider;
+  // mode the model calls run on Task Runners (the helpers run the Claude command shown), but the classifier still answers
+  // here in both modes.
+  const classifier = classifierProvider();
+  const model = modelProvider();
   const mode: ProviderMode = {
-    model: modelProvider().provider === "compatible" ? "compatible" : "claude",
-    classifier: classifier === "compatible" || classifier === "decisions" ? classifier : "jev",
+    model: inferenceMode(db) === "user-local" ? "claude" : model.provider === "compatible" ? "compatible" : model.provider === "invalid" ? "invalid" : "claude",
+    classifier: classifier.provider === "compatible" || classifier.provider === "decisions" ? classifier.provider : classifier.provider === "invalid" ? "invalid" : "jev",
+    ...(model.provider === "invalid" && { modelProblem: model.reason }),
+    ...(classifier.provider === "invalid" && { classifierProblem: classifier.reason }),
   };
   return promptsReport(COMMIT, mode);
 }

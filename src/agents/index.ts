@@ -69,6 +69,8 @@ function jev(args: string[]): void {
   const o = jevOutage(db);
   const by = c.provider === "compatible" ? `the compatible classifier (${who})` : c.provider === "decisions" ? `the decisions endpoint (${who})` : c.provider === "invalid" ? `nothing: ${c.reason}` : "Jev";
   console.log(`The typed decisions are answered by ${by}`);
+  // An invalid provider is not "Jev in use": the fallback model answers while the configuration is wrong.
+  if (!o && c.provider === "invalid") return;
   if (o) console.log(`${who} unavailable (${o.reason}) since ${o.since}; the fallback model does its work`);
   else console.log(jevEnabled(db) ? `${who} in use` : `${who} switched off; the fallback model does its work`);
 }

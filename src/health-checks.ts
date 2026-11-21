@@ -172,11 +172,14 @@ function accountsCheck({ db, nowMs, probe }: CheckCtx): Check[] {
  * The providers this host's calls go to (src/agents/compatible.ts): a configuration the environment cannot satisfy fails
  * before the first job does; a compatible provider that is not in use passes without a word.
  */
-function providerChecks(): Check[] {
+function providerChecks({ mode }: CheckCtx): Check[] {
   const m = modelProviderReport();
   const c = classifierProvider();
   const out: Check[] = [];
-  if (m.provider === "invalid") out.push({ id: "model-provider", state: "fail", text: `Model calls cannot run: ${m.reason}`, brief: "The model provider is not configured", since: null, to: "/accounts" });
+  // In the user-local mode the model calls run on maintainers' Task Runners, so the model provider setting is not used
+  // and a mistake in it says nothing about this instance. The classifier still answers here in both modes.
+  if (mode === "user-local") out.push(ok("model-provider", "/accounts"));
+  else if (m.provider === "invalid") out.push({ id: "model-provider", state: "fail", text: `Model calls cannot run: ${m.reason}`, brief: "The model provider is not configured", since: null, to: "/accounts" });
   else if (m.provider === "compatible" && m.problem) out.push({ id: "model-provider", state: "fail", text: `Model calls cannot run: ${m.problem}`, brief: "The model provider is not ready", since: null, to: "/accounts" });
   else out.push(ok("model-provider", "/accounts"));
   if (c.provider === "invalid") out.push({ id: "classifier-provider", state: "warn", text: `The typed decisions cannot run: ${c.reason}; the fallback model does their work`, brief: "The classifier is not configured", since: null, to: "/accounts" });

@@ -51,9 +51,14 @@ export type ProviderChoice =
   | { provider: "compatible"; config: CompatibleConfig }
   | { provider: "invalid"; reason: string };
 
+/** Tokens of one request, in the shape the pipeline records. */
+export type ChatUsage = { input: number; output: number; cacheRead: number; cacheWrite: number };
+
 /** A failed request: `account` means the API rejected the key or the account (an outage, not retried); `call` is one call. */
 export class CompatibleError extends Error {
   readonly kind: "account" | "call";
+  /** The tokens a call had already spent when it failed (a later turn's failure keeps the earlier turns' usage). */
+  usage?: ChatUsage;
   constructor(kind: "account" | "call", message: string) {
     super(message);
     this.name = "CompatibleError";
@@ -190,9 +195,6 @@ export type ChatMessage =
   | { role: "assistant"; content: string | null; toolCalls?: ChatToolCall[] }
   | { role: "tool"; toolCallId: string; content: string };
 export type ChatTool = { name: string; description: string; parameters: Record<string, unknown> };
-
-/** Tokens of one request, in the shape the pipeline records. */
-export type ChatUsage = { input: number; output: number; cacheRead: number; cacheWrite: number };
 
 export type ChatReply = { content: string | null; toolCalls: ChatToolCall[]; usage: ChatUsage; model: string };
 

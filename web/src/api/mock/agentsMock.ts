@@ -119,7 +119,7 @@ export function createAgentsMock(me: User, changed: () => void): Pick<Api, "acco
   };
   let pause: UsagePause = { fiveHour: 80, weekly: 80 };
   let jev: JevStatus = { enabled: true, unavailable: null, provider: "jev", model: null };
-  const providers: ProviderStatus = { model: { provider: "claude" }, classifier: { provider: "jev" } };
+  const providers: ProviderStatus = { mode: "server", model: { provider: "claude" }, classifier: { provider: "jev" } };
   const visible = () => accounts.filter((a) => me.role === "operator" || a.enabled);
   return {
     accounts: {

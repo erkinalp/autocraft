@@ -89,18 +89,24 @@ export async function runCompatibleCall(o: CompatibleCall): Promise<CompatibleRe
   const messages: ChatMessage[] = [...(system === null ? [] : [{ role: "system" as const, content: system }]), { role: "user", content: o.stdin }];
   let usage = zero(), model = o.model;
   const turns = o.maxTurns ?? 1;
+  /** A failed call that still reports the tokens its earlier turns spent. */
+  const fail: (message: string) => never = (message) => { throw withUsage(new CompatibleError("call", message), usage); };
   for (let turn = 1; turn <= turns; turn++) {
     throwIfHalted("waiting for the model");
     const left = deadline - Date.now();
-    if (left <= 0) throw new CompatibleError("call", `the call ran past its ${Math.round(o.timeoutMs / 1000)} s limit`);
-    const r = await chat(o.cfg, { model: o.model, messages, timeoutMs: left, ...(tools.length && { tools }) }, o.base);
+    if (left <= 0) fail(`the call ran past its ${Math.round(o.timeoutMs / 1000)} s limit`);
+    let r: Awaited<ReturnType<typeof chat>>;
+    try { r = await chat(o.cfg, { model: o.model, messages, timeoutMs: left, ...(tools.length && { tools }) }, o.base); } catch (e) {
+      if (e instanceof CompatibleError) withUsage(e, usage);
+      throw e;
+    }
     usage = add(usage, r.usage);
     model = r.model;
     if (!r.toolCalls.length) {
-      if (r.content === null || !r.content.trim()) throw new CompatibleError("call", "the reply is empty");
+      if (r.content === null || !r.content.trim()) fail("the reply is empty");
       return { text: r.content, usage, turns: turn, model };
     }
-    if (turn === turns) throw new CompatibleError("call", `the call used all ${turns} turns without an answer`);
+    if (turn === turns) fail(`the call used all ${turns} turns without an answer`);
     messages.push({ role: "assistant", content: r.content, toolCalls: r.toolCalls });
     for (const c of r.toolCalls) {
       o.onProgress?.(progressLine(c.name, safeJson(c.arguments)));
@@ -108,7 +114,13 @@ export async function runCompatibleCall(o: CompatibleCall): Promise<CompatibleRe
       messages.push({ role: "tool", toolCallId: c.id, content: out.isError ? `Error: ${out.text}` : out.text });
     }
   }
-  throw new CompatibleError("call", "the model gave no answer");
+  throw withUsage(new CompatibleError("call", "the model gave no answer"), usage);
+}
+
+/** The error, carrying what the call had spent so far. */
+function withUsage(e: CompatibleError, usage: ChatUsage): CompatibleError {
+  if (usage.input || usage.output || usage.cacheRead || usage.cacheWrite) e.usage = usage;
+  return e;
 }
 
 function safeJson(s: string): unknown {

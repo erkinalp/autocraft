@@ -104,20 +104,51 @@ function walk(dir: string, visit: (rel: string, host: string) => boolean): void 
   }
 }
 
-/** A glob as a regular expression over `/`-separated relative paths: `**` crosses directories, `*` and `?` do not. */
-export function globToRegExp(pattern: string): RegExp {
-  let out = "", i = 0;
-  for (; i < pattern.length; i++) {
-    const c = pattern[i]!;
+/**
+ * A glob over `/`-separated relative paths, matched with bounded work per path: `**` matches zero or more path
+ * segments, `*` and `?` match within one segment, and everything else is literal. It is a hand-written matcher rather
+ * than a regular expression because the pattern comes from the model: `["*a" × 30, "b"]` compiles to a regular
+ * expression that backtracks exponentially on a long path, which would hold the service's event loop (the Grep content
+ * search runs in a worker for the same reason, but Glob and the Grep filter run here).
+ */
+export function globMatches(pattern: string, rel: string): boolean {
+  const pat = pattern.split("/").filter((x) => x !== "");
+  const segs = rel.split("/").filter(Boolean);
+  // A pattern without a slash names a file at any depth, as Glob documents.
+  if (!pattern.includes("/")) pat.unshift("**");
+  const memo = new Map<number, boolean>();
+  const at = (i: number, j: number): boolean => {
+    const k = i * (segs.length + 1) + j;
+    const hit = memo.get(k);
+    if (hit !== undefined) return hit;
+    let r: boolean;
+    if (i === pat.length) r = j === segs.length;
+    else if (pat[i] === "**") r = at(i + 1, j) || (j < segs.length && at(i, j + 1));
+    else r = j < segs.length && segmentMatches(pat[i]!, segs[j]!) && at(i + 1, j + 1);
+    memo.set(k, r);
+    return r;
+  };
+  return at(0, 0);
+}
+
+/** One segment pattern (`*`, `?` and literals) against one path segment: a table walk, never a backtracking regex. */
+export function segmentMatches(pattern: string, segment: string): boolean {
+  let prev = new Array<boolean>(segment.length + 1).fill(false);
+  prev[0] = true;
+  for (let i = 1; i <= pattern.length; i++) {
+    const c = pattern[i - 1]!;
+    const cur = new Array<boolean>(segment.length + 1).fill(false);
     if (c === "*") {
-      if (pattern[i + 1] === "*") {
-        // `**/` also matches no directory at all.
-        if (pattern[i + 2] === "/") { out += "(?:.*/)?"; i += 2; } else { out += ".*"; i += 1; }
-      } else out += "[^/]*";
-    } else if (c === "?") out += "[^/]";
-    else out += c.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      cur[0] = prev[0]!;
+      for (let j = 1; j <= segment.length; j++) cur[j] = prev[j]! || cur[j - 1]!;
+    } else if (c === "?") {
+      for (let j = 1; j <= segment.length; j++) cur[j] = prev[j - 1]!;
+    } else {
+      for (let j = 1; j <= segment.length; j++) cur[j] = prev[j - 1]! && segment[j - 1] === c;
+    }
+    prev = cur;
   }
-  return new RegExp(`^${out}$`);
+  return prev[segment.length]!;
 }
 
 /** `Glob`: the files under a root that match a pattern (a pattern without `/` matches a file name at any depth). */
@@ -125,13 +156,14 @@ export function globFiles(roots: readonly ToolRoot[], args: { pattern?: unknown;
   if (typeof args.pattern !== "string" || !args.pattern.trim()) throw new ToolError("pattern is required");
   const base = typeof args.path === "string" && args.path ? args.path : roots[0]?.path;
   if (!base) throw new ToolError("this call has no files to read");
-  const { host, root } = resolveToolPath(roots, base);
+  const { host } = resolveToolPath(roots, base);
   if (!statSync(host).isDirectory()) throw new ToolError(`${base} is not a directory`);
   const pattern = args.pattern.trim();
-  const re = globToRegExp(pattern.includes("/") ? pattern : `**/${pattern}`);
+  // Results are named from the directory the model searched, so a Read of one opens what it saw.
+  const dir = checkVirtual(base);
   const found: string[] = [];
   walk(host, (rel) => {
-    if (re.test(rel)) found.push(`${root.path}/${rel}`);
+    if (globMatches(pattern, rel)) found.push(`${dir}/${rel}`);
     return found.length < GLOB_MAX;
   });
   if (!found.length) return `no file matches ${pattern} under ${base}`;
@@ -147,12 +179,12 @@ export async function grepFiles(roots: readonly ToolRoot[], args: { pattern?: un
   const { host, root } = resolveToolPath(roots, base);
   const st = statSync(host);
   // A glob without a slash matches a file name at any depth, as Glob does (`*.rs`, not only a top-level match).
-  const include = typeof args.glob === "string" && args.glob ? globToRegExp(args.glob.includes("/") ? args.glob : `**/${args.glob}`) : null;
+  const include = typeof args.glob === "string" && args.glob ? args.glob : null;
   const head = typeof args.head_limit === "number" && Number.isFinite(args.head_limit) ? Math.min(GREP_MAX, Math.max(1, Math.floor(args.head_limit))) : GREP_MAX;
   const files: string[] = [];
   if (st.isDirectory()) {
     walk(host, (rel, h) => {
-      if (!include || include.test(rel)) files.push(h);
+      if (include === null || globMatches(include, rel)) files.push(h);
       return files.length < WALK_MAX_FILES;
     });
   } else files.push(host);

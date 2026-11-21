@@ -12,7 +12,7 @@ import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } 
 import { accountConfigDir, itemRepos, NoTakerError, poolRoom, repoBatches, startClaudeRun, type PoolRoom, startCompatibleRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
 import { askCompatibleClassifier, CompatibleError, modelForAlias, modelProvider, type CompatibleConfig } from "../agents/compatible.ts";
 import { askDecisionsClassifier } from "../agents/decisions.ts";
-import { classifierProvider } from "../agents/classifier.ts";
+import { classifierModel, classifierProvider } from "../agents/classifier.ts";
 import { toolRoots } from "../agents/filetools.ts";
 import { runCompatibleCall } from "../agents/model-call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
@@ -522,7 +522,10 @@ async function askCompatible<K extends ClaudePromptId>(id: K, model: string, inp
     return await lintTail(reply, opts.lint, false, async () => "skipped");
   } catch (e) {
     const halt = isHalt(e);
-    finishRun(db, runId, { state: "failed", error: scrubError(`${(e as Error).message ?? e}`), summary: halt ? "cancelled" : e instanceof CompatibleError ? "model call failed" : "model call failed before the answer" });
+    // A call that failed after some turns still spent their tokens: the failed run carries them.
+    const u = e instanceof CompatibleError ? e.usage : undefined;
+    const tokens = u ? { input: u.input, output: u.output, cacheRead: u.cacheRead, cacheWrite: u.cacheWrite } : undefined;
+    finishRun(db, runId, { state: "failed", ...(tokens && { tokens }), error: scrubError(`${(e as Error).message ?? e}`), summary: halt ? "cancelled" : e instanceof CompatibleError ? "model call failed" : "model call failed before the answer" });
     if (halt) throw e;
     return null;
   } finally {
@@ -914,7 +917,9 @@ export async function runJev(db: DatabaseSync, runId: string, items: Item[], wid
     // Once a call shows Jev is unavailable, the items still waiting are left for Haiku.
     if (!jevAvailable(db)) return;
     const ref = refOf(item);
-    const r = await runModelStep(db, CLASSIFY_JEV, item, { usage: { run: runId, agent: `jev-${ref}`, stage: "classify", items: (ok) => (ok ? 1 : 0), withoutUsage: true, skipWhen: (x) => !x.ok && !jevAvailable(db) } });
+    // Jev answers are recorded even without a usage field (its price is flat), but a classifier that reports no tokens is
+    // not given a zero-token row: the row would claim it ran on no tokens.
+    const r = await runModelStep(db, CLASSIFY_JEV, item, { usage: { run: runId, agent: `jev-${ref}`, stage: "classify", items: (ok) => (ok ? 1 : 0), withoutUsage: classifierModel() === null, skipWhen: (x) => !x.ok && !jevAvailable(db) } });
     if (r.ok) saveVerdict(db, "jev", runId, r.value);
     else if (jevAvailable(db)) console.error(`jev: no valid answer for ${ref}`);
   }), width);

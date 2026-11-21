@@ -11,8 +11,10 @@ import { test } from "node:test";
 import { askClaude, askJev } from "../src/classify/run.ts";
 import { askCompatibleClassifier, checkBaseUrl, modelProvider, readKey } from "../src/agents/compatible.ts";
 import { classifierProvider } from "../src/agents/classifier.ts";
-import { askDecisionsClassifier, decisionsConfig } from "../src/agents/decisions.ts";
-import { grepFiles, readText } from "../src/agents/filetools.ts";
+import { askDecisionsClassifier, decisionsConfig, jevAnswers, wireQuestions } from "../src/agents/decisions.ts";
+import { getJev, getProviders } from "../src/dash/api/agents.ts";
+import { setInferenceMode } from "../src/remote/mode.ts";
+import { globFiles, globMatches, grepFiles, readText } from "../src/agents/filetools.ts";
 import { jevAvailable, jevFailure } from "../src/agents/jev.ts";
 import { connect } from "../src/db.ts";
 import { SAMPLE_ITEMS, SAMPLE_OPUS_PRS } from "../src/prompts/samples.ts";
@@ -209,7 +211,7 @@ test("a classifier environment that cannot run makes the typed decisions visibly
   const restore = saveEnv();
   const dir = mkdtempSync(join(SCRATCH, "compat-clf-bad-"));
   try {
-    Object.assign(process.env, { AUTOCRAFT_CLASSIFIER_PROVIDER: "compatible", AUTOCRAFT_COMPATIBLE_KEY_FILE: join(dir, "missing"), AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL: "small-model" });
+    Object.assign(process.env, { AUTOCRAFT_CLASSIFIER_PROVIDER: "compatible", AUTOCRAFT_COMPATIBLE_BASE_URL: "", AUTOCRAFT_COMPATIBLE_KEY_FILE: join(dir, "missing"), AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL: "small-model" });
     assert.equal(classifierProvider().provider, "invalid");
     const db = connect(join(dir, "t.db"));
     assert.equal(jevAvailable(db), false);
@@ -226,12 +228,14 @@ test("the decisions endpoint answers Jev's questions in one request, without a t
   if (process.platform !== "win32") chmodSync(keyFile, 0o600);
   const seen: { url?: string; auth?: string; body: { model?: string; input?: unknown; questions?: { type?: string; name?: string; choices?: { value?: string }[] }[] } }[] = [];
   let status = 200;
+  let raw: string | null = null;
   const server = createServer((req, res) => {
     let b = "";
     req.on("data", (c) => (b += c));
     req.on("end", () => {
       seen.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(b) });
       res.statusCode = status;
+      if (raw !== null) { res.end(raw); return; }
       res.end(JSON.stringify(status === 200
         ? { answers: [
           { type: "choice", name: "type", choice: "bugfix", confidence: 0.8, probabilities: [{ value: "bugfix", probability: 0.8 }, { value: "missing feature", probability: 0.2 }] },
@@ -271,6 +275,14 @@ test("the decisions endpoint answers Jev's questions in one request, without a t
     assert.equal(jevFailure(bad)?.kind, "account");
     status = 503;
     assert.equal(jevFailure(await askDecisionsClassifier({ baseUrl: base, keyFile, model: "test-decisions" }, "{\"state\":{},\"questions\":{}}", 5000)), null);
+    // A 200 that is not an answers list is an unreadable answer, not a done run.
+    status = 200;
+    raw = "not json";
+    const junk = await askDecisionsClassifier({ baseUrl: base, keyFile, model: "test-decisions" }, "{\"state\":{},\"questions\":{}}", 5000);
+    assert.notEqual(junk.code, 0);
+    assert.match(junk.stderr, /unreadable answer/);
+    raw = JSON.stringify({ error: { message: "refused" } });
+    assert.notEqual((await askDecisionsClassifier({ baseUrl: base, keyFile, model: "test-decisions" }, "{\"state\":{},\"questions\":{}}", 5000)).code, 0);
   } finally { restore(); db.close(); server.close(); }
 });
 
@@ -280,6 +292,80 @@ test("the decisions endpoint defaults to its own root and model, and takes the c
   assert.equal((d as { config: { baseUrl: string; model: string } }).config.baseUrl, "https://api.openai.com/v1");
   assert.equal((d as { config: { model: string } }).config.model, "gpt-6-luna");
   assert.ok("problem" in decisionsConfig({}));
+});
+
+test("a named decisions answer is matched by name only, never by another question's position", () => {
+  const questions = wireQuestions({
+    security: { type: "noul", instructions: "is it security?" },
+    needs_decision: { type: "noul", instructions: "does a person need to decide?" },
+  });
+  // The endpoint leaves one out: the other's probability must not be handed to it.
+  const partial = jevAnswers(questions, [{ type: "predicate", name: "needs_decision", probability: 0.1 }]);
+  assert.equal((partial.needs_decision as { noul: number }).noul, 0.1);
+  assert.equal(partial.security, undefined);
+  // Positional matching only when the endpoint names no answer at all.
+  const unnamed = jevAnswers(questions, [{ type: "predicate", probability: 0.7 }, { type: "predicate", probability: 0.1 }]);
+  assert.equal((unnamed.security as { noul: number }).noul, 0.7);
+  assert.equal((unnamed.needs_decision as { noul: number }).noul, 0.1);
+  // A refusal leaves the question unanswered.
+  assert.equal(jevAnswers(questions, [{ type: "refusal", name: "security" }, { type: "predicate", name: "needs_decision", probability: 0.4 }]).security, undefined);
+});
+
+test("Glob names a file under the directory searched, and a hostile pattern is matched without backtracking", () => {
+  const dir = mkdtempSync(join(SCRATCH, "compat-glob-"));
+  mkdirSync(join(dir, "src", "deep"), { recursive: true });
+  writeFileSync(join(dir, "src", "a.ts"), "a\n");
+  writeFileSync(join(dir, "src", "deep", "b.ts"), "b\n");
+  const roots = [{ path: "/repo", dir }];
+  const under = globFiles(roots, { pattern: "*.ts", path: "/repo/src" });
+  assert.match(under, /\/repo\/src\/a\.ts/);
+  assert.match(under, /\/repo\/src\/deep\/b\.ts/);
+  // `**` crosses directories; a name-only pattern matches at any depth.
+  assert.match(globFiles(roots, { pattern: "**/*.ts" }), /\/repo\/src\/deep\/b\.ts/);
+  // The pattern that makes a regular expression backtrack exponentially: the matcher answers at once.
+  assert.equal(globMatches("*a".repeat(30) + "b", "a".repeat(200)), false);
+  assert.equal(globMatches("src/**/b.ts", "src/deep/b.ts"), true);
+});
+
+test("a sandboxed call that fails after a turn keeps that turn's tokens on the failed run", async () => {
+  const dir = mkdtempSync(join(SCRATCH, "compat-usage-"));
+  const repo = join(dir, "repo");
+  mkdirSync(repo, { recursive: true });
+  writeFileSync(join(repo, "a.txt"), "hello\n");
+  const api = await stubApi([
+    () => ({ json: { model: "test-top", choices: [{ message: { role: "assistant", content: null, tool_calls: [{ id: "c1", type: "function", function: { name: "Glob", arguments: "{}" } }] } }], usage: { prompt_tokens: 120, completion_tokens: 9 } } }),
+    () => ({ status: 500, json: { error: { message: "overloaded" } } }),
+  ]);
+  const restore = providerEnv(dir, api.url);
+  const db = connect(join(dir, "t.db"));
+  try {
+    const r = await askClaude("review.opus", "opus", SAMPLE_OPUS_PRS, db, { checkout: repo });
+    assert.equal(r, null);
+    const run = db.prepare("SELECT state, input_tokens, output_tokens, error FROM agent_runs ORDER BY id DESC LIMIT 1").get() as { state: string; input_tokens: number | null; output_tokens: number | null; error: string };
+    assert.equal(run.state, "failed");
+    // The first turn's tokens are kept: the failed run does not claim it spent nothing.
+    assert.equal(run.input_tokens, 120);
+    assert.equal(run.output_tokens, 9);
+    assert.match(run.error, /status=500/);
+  } finally { restore(); api.close(); db.close(); }
+});
+
+test("the provider status keeps an invalid configuration and the inference mode, instead of naming a provider that is not running", () => {
+  const dir = mkdtempSync(join(SCRATCH, "compat-status-"));
+  const db = connect(join(dir, "t.db"));
+  const restore = saveEnv();
+  try {
+    Object.assign(process.env, { AUTOCRAFT_MODEL_PROVIDER: "compatible", AUTOCRAFT_COMPATIBLE_BASE_URL: "http://host/v1", AUTOCRAFT_CLASSIFIER_PROVIDER: "bogus" });
+    const p = getProviders(db);
+    assert.equal(p.mode, "server");
+    assert.equal(p.model.provider, "invalid");
+    const j = getJev(db);
+    assert.equal(j.provider, "invalid");
+    assert.match(j.problem ?? "", /must be jev/);
+    // The model calls go to Task Runners in the user-local mode: the page says so instead of claiming the provider runs.
+    setInferenceMode(db, "user-local", "test");
+    assert.equal(getProviders(db).mode, "user-local");
+  } finally { restore(); db.close(); }
 });
 
 test("a Grep pattern that backtracks catastrophically is stopped instead of holding the event loop", async () => {

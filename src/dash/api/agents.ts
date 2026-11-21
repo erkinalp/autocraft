@@ -9,6 +9,7 @@ import { modelProviderReport } from "../../agents/compatible.ts";
 import { classifierProvider } from "../../agents/classifier.ts";
 import { addAccount, beginLogin, beginToken, refreshNow, removeToken, sendCode, sendTokenCode, signOut, stopLogin, stopToken } from "../../agents/manage.ts";
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
+import { inferenceMode } from "../../remote/mode.ts";
 import { HttpError } from "../server/util.ts";
 import type { Req } from "../types.ts";
 import { hiddenRepos } from "./visible.ts";
@@ -39,19 +40,22 @@ export const putPause = (db: DatabaseSync, req: Req) => wrap(() => setUsagePause
 export const getJev = (db: DatabaseSync): JevStatus => {
   const o = jevOutage(db);
   const c = classifierProvider();
+  const kind = c.provider === "compatible" || c.provider === "decisions" ? c.provider : c.provider === "invalid" ? "invalid" : "jev";
   return {
     enabled: jevEnabled(db),
     unavailable: o ? { reason: o.reason, since: o.since } : null,
-    provider: c.provider === "compatible" ? "compatible" : c.provider === "decisions" ? "decisions" : "jev",
+    provider: kind,
     model: c.provider === "compatible" || c.provider === "decisions" ? c.model : null,
+    ...(c.provider === "invalid" ? { problem: c.reason } : {}),
   };
 };
 
 /** The model provider and the classifier's, as configured now. Nothing here reads a key or a URL's path. */
-export const getProviders = (): ProviderStatus => {
+export const getProviders = (db: DatabaseSync): ProviderStatus => {
   const m = modelProviderReport();
   const c = classifierProvider();
   return {
+    mode: inferenceMode(db) === "user-local" ? "user-local" : "server",
     model: m.provider === "compatible" ? { provider: "compatible", models: { top: m.models.top, mid: m.models.mid, small: m.models.small }, problem: m.problem }
       : m.provider === "invalid" ? { provider: "invalid", reason: m.reason } : { provider: "claude" },
     classifier: c.provider === "compatible" ? { provider: "compatible", model: c.model }

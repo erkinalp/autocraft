@@ -103,10 +103,12 @@ export function JevLine({ operator }: { operator: boolean }) {
   const write = useWrite();
   const q = useQuery<JevStatus>("accounts-jev", (a) => a.accounts.jev());
   if (!q.data) return <ErrorLine error={q.error?.message} />;
-  const { enabled, unavailable, provider, model } = q.data;
-  const who = provider === "jev" ? "Jev" : (model ?? "a configured model");
+  const { enabled, unavailable, provider, model, problem } = q.data;
+  const who = provider === "jev" || provider === "invalid" ? "Jev" : (model ?? "a configured model");
   const kind = provider === "compatible" ? " (the compatible classifier)" : provider === "decisions" ? " (the decisions endpoint)" : "";
-  const line = unavailable
+  const line = provider === "invalid"
+    ? `The classifier cannot run: ${problem ?? "its configuration is incomplete"} — the fallback model does that work`
+    : unavailable
     ? `${who} is unavailable (${unavailable.reason}) since ${clock(unavailable.since)} — the fallback model does that work`
     : provider === "jev" ? "Jev in use" : `${who} answers the typed decisions${kind}`;
   return (
@@ -132,8 +134,10 @@ export function JevLine({ operator }: { operator: boolean }) {
 export function ProviderLine() {
   const q = useQuery<ProviderStatus>("accounts-providers", (a) => a.accounts.providers());
   if (!q.data) return <ErrorLine error={q.error?.message} />;
-  const { model, classifier } = q.data;
-  const modelLine = model.provider === "compatible"
+  const { mode, model, classifier } = q.data;
+  const modelLine = mode === "user-local"
+    ? "Model calls run on maintainers' Task Runners (the user-local inference mode); the model provider below is not used"
+    : model.provider === "compatible"
     ? `Model calls run on the compatible provider: ${model.models.top}, ${model.models.mid} and ${model.models.small} for the top, mid and small tiers${model.problem ? ` — ${model.problem}` : ""}`
     : model.provider === "invalid" ? `Model calls cannot run: ${model.reason}` : "Model calls run on Claude accounts";
   return (

@@ -79,10 +79,14 @@ function distribution(a: WireAnswer): Record<string, number> {
  */
 export function jevAnswers(questions: DecisionsWireQuestion[], answers: WireAnswer[]): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  const byName = new Map<string, WireAnswer>();
-  for (const a of answers) if (typeof a?.name === "string") byName.set(a.name, a);
+  // Named answers are matched by name and only by name: falling back to the answer at the same position would hand one
+  // question's probability to another when the endpoint leaves one out. Positional matching is only for an endpoint that
+  // names none of them.
+  const named = new Map<string, WireAnswer>();
+  for (const a of answers) if (typeof a?.name === "string") named.set(a.name, a);
+  const anyNamed = named.size > 0;
   questions.forEach((q, i) => {
-    const a = byName.get(q.name) ?? answers[i];
+    const a = anyNamed ? named.get(q.name) : answers[i];
     if (!a || a.type === "refusal") return;
     if (q.type === "predicate") {
       const p = num(a.probability);
@@ -135,8 +139,10 @@ export async function askDecisionsClassifier(cfg: DecisionsConfig, body: string,
     return fail(res.status, (detail || text.trim() || res.statusText).slice(0, 200));
   }
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { return { code: 0, stdout: text, stderr: "" }; }
+  try { parsed = JSON.parse(text); } catch { return { code: 1, stdout: text, stderr: "classifier: unreadable answer: the reply is not JSON\n" }; }
   const answers = (parsed && typeof parsed === "object" ? (parsed as { answers?: unknown }).answers : null);
-  if (!Array.isArray(answers)) return { code: 0, stdout: text, stderr: "" };
+  // A refusal of the whole request (a policy object rather than an answers list) is an unreadable answer too: code 0
+  // here means "answered", so this cannot be reported as one.
+  if (!Array.isArray(answers)) return { code: 1, stdout: text, stderr: "classifier: unreadable answer: the reply has no answers list\n" };
   return { code: 0, stdout: JSON.stringify({ answers: jevAnswers(request.questions, answers as WireAnswer[]) }), stderr: "" };
 }

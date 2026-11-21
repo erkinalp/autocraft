@@ -101,7 +101,7 @@ const zero = (): Usage => ({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0, c
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const sizeOf = <I,>(step: { size?: (i: I) => number }, x: I) => step.size ? step.size(x) : Array.isArray(x) ? x.length : 1;
 
-type Reply = { text: string; usage: Usage; problems?: LintProblem[]; fixTurn?: boolean; model?: string } | { answers: unknown; usage: Usage; code: number | null; json: boolean };
+type Reply = { text: string; usage: Usage; problems?: LintProblem[]; fixTurn?: boolean; model?: string } | { answers: unknown; usage: Usage; code: number | null; json: boolean; /** False when the reply carried no usage field (a decisions endpoint reports none). */ usageKnown?: boolean };
 
 /**
  * Runs one declared step on `input`: the call, the parse, up to `attempts` calls (a parse error or a failed call repeats
@@ -133,7 +133,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     if (!r) { error = "no answer"; continue; }
     usage = add(usage, r.usage);
     if ("text" in r) opts.onReply?.(r as LintedReply);
-    if ("answers" in r ? r.json : true) sawUsage = true;
+    if ("answers" in r ? r.json && r.usageKnown !== false : true) sawUsage = true;
     const ctx: ParseCtx = { attempt, last: attempt === attempts - 1, ...("text" in r ? { problems: r.problems, fixTurn: r.fixTurn } : { code: r.code }) };
     if ("answers" in r && !r.json) { error = "unreadable answer"; continue; }
     const reply = ("text" in r ? r.text : r.answers) as never;
