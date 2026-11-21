@@ -118,7 +118,9 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
   let usage = zero();
   let todo: I | undefined = input, rest: I | undefined = input;
   let fallback: V | null = null, error = "no answer", sawUsage = false;
-  let ran: string | undefined, untaken: NoTakerError | undefined;
+  // `reported`: the model any text reply said it ran, set before parsing, so a reply that fails to parse still names its
+  // model in the usage row. `ran`: the model of the last accepted answer, which is what a result reports.
+  let ran: string | undefined, reported: string | undefined, untaken: NoTakerError | undefined;
   for (let attempt = 0; attempt < attempts && todo !== undefined; attempt++) {
     if (opts.cancelled?.()) break;
     if (step.provider === "jev" && !jevAvailable(db)) { error = "jev unavailable"; break; }
@@ -132,7 +134,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     }
     if (!r) { error = "no answer"; continue; }
     usage = add(usage, r.usage);
-    if ("text" in r) opts.onReply?.(r as LintedReply);
+    if ("text" in r) { if (r.model) reported = r.model; opts.onReply?.(r as LintedReply); }
     if ("answers" in r ? r.json && r.usageKnown !== false : true) sawUsage = true;
     const ctx: ParseCtx = { attempt, last: attempt === attempts - 1, ...("text" in r ? { problems: r.problems, fixTurn: r.fixTurn } : { code: r.code }) };
     if ("answers" in r && !r.json) { error = "unreadable answer"; continue; }
@@ -158,7 +160,7 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     // reported model when it differs (the compatible provider, and a Task Runner's own model), and a compatible
     // classifier's model for a typed decision. Jev's flat price is not applied to a classifier that is not Jev.
     const typed = step.provider === "jev" ? classifierModel() : null;
-    const model = u.model ?? typed ?? ran ?? reg.models[0]!;
+    const model = u.model ?? typed ?? reported ?? reg.models[0]!;
     const saved = step.provider === "jev" && typed === null ? { ...usage, cost: usage.input * JEV_USD_PER_INPUT_TOKEN } : usage;
     if (u.keepEarlier) db.prepare("UPDATE main.token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?").run(u.run, u.agent);
     saveUsage(db, u.run, u.agent, u.stage, model, items, saved, start, new Date().toISOString());

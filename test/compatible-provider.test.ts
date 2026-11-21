@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { test } from "node:test";
 import { askClaude, askJev } from "../src/classify/run.ts";
 import { runModelStep } from "../src/agents/step.ts";
-import { textStep } from "../src/agents/steps.ts";
+import { REFERENCE_HAIKU, textStep } from "../src/agents/steps.ts";
 import { askCompatibleClassifier, checkBaseUrl, modelProvider, readKey } from "../src/agents/compatible.ts";
 import { classifierProvider } from "../src/agents/classifier.ts";
 import { askDecisionsClassifier, decisionsConfig, jevAnswers, wireQuestions } from "../src/agents/decisions.ts";
@@ -340,6 +340,22 @@ test("the usage row names the model that answered, not the alias the registry as
     assert.equal(r.ok, true);
     const row = db.prepare("SELECT model, cost_usd FROM token_usage WHERE run_id = 'r1'").get() as { model: string; cost_usd: number | null };
     assert.equal(row.model, "test-small");
+    assert.equal(row.cost_usd, null);
+  } finally { restore(); api.close(); db.close(); }
+});
+
+test("a reply that fails to parse still names the model that answered in its usage row", async () => {
+  const dir = mkdtempSync(join(SCRATCH, "compat-usage-unparsed-"));
+  const api = await stubApi([() => answer("this is not the JSON list the prompt asks for")]);
+  const restore = providerEnv(dir, api.url);
+  const db = connect(join(dir, "t.db"));
+  try {
+    const r = await runModelStep(db, REFERENCE_HAIKU, [{ ref: "app#1", text: "a public text" }] as never, { usage: { run: "r2", agent: "a", stage: "classify" } });
+    assert.equal(r.ok, false);
+    // The tokens were spent by test-small even though no answer parsed: the row must not be filed under "haiku".
+    const row = db.prepare("SELECT model, input_tokens, cost_usd FROM token_usage WHERE run_id = 'r2'").get() as { model: string; input_tokens: number; cost_usd: number | null };
+    assert.equal(row.model, "test-small");
+    assert.ok(row.input_tokens > 0);
     assert.equal(row.cost_usd, null);
   } finally { restore(); api.close(); db.close(); }
 });
