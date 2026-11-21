@@ -9,7 +9,9 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { askClaude, askJev } from "../src/classify/run.ts";
-import { askCompatibleClassifier, classifierProvider, checkBaseUrl, modelProvider, readKey } from "../src/agents/compatible.ts";
+import { askCompatibleClassifier, checkBaseUrl, modelProvider, readKey } from "../src/agents/compatible.ts";
+import { classifierProvider } from "../src/agents/classifier.ts";
+import { askDecisionsClassifier, decisionsConfig } from "../src/agents/decisions.ts";
 import { grepFiles, readText } from "../src/agents/filetools.ts";
 import { jevAvailable, jevFailure } from "../src/agents/jev.ts";
 import { connect } from "../src/db.ts";
@@ -215,6 +217,69 @@ test("a classifier environment that cannot run makes the typed decisions visibly
     assert.match(outage?.value ?? "", /base URL/);
     db.close();
   } finally { restore(); }
+});
+
+test("the decisions endpoint answers Jev's questions in one request, without a token count", async () => {
+  const dir = mkdtempSync(join(SCRATCH, "decisions-"));
+  const keyFile = join(dir, "key");
+  writeFileSync(keyFile, "sk-test-secret\n");
+  if (process.platform !== "win32") chmodSync(keyFile, 0o600);
+  const seen: { url?: string; auth?: string; body: { model?: string; input?: unknown; questions?: { type?: string; name?: string; choices?: { value?: string }[] }[] } }[] = [];
+  let status = 200;
+  const server = createServer((req, res) => {
+    let b = "";
+    req.on("data", (c) => (b += c));
+    req.on("end", () => {
+      seen.push({ url: req.url, auth: req.headers.authorization, body: JSON.parse(b) });
+      res.statusCode = status;
+      res.end(JSON.stringify(status === 200
+        ? { answers: [
+          { type: "choice", name: "type", choice: "bugfix", confidence: 0.8, probabilities: [{ value: "bugfix", probability: 0.8 }, { value: "missing feature", probability: 0.2 }] },
+          { type: "predicate", name: "security", probability: 0.7 },
+          { type: "predicate", name: "needs_decision", probability: 0.1 },
+        ] }
+        : { error: { message: "invalid key" } }));
+    });
+  });
+  await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const restore = saveEnv();
+  Object.assign(process.env, { AUTOCRAFT_CLASSIFIER_PROVIDER: "decisions", AUTOCRAFT_DECISIONS_BASE_URL: base, AUTOCRAFT_DECISIONS_KEY_FILE: keyFile, AUTOCRAFT_DECISIONS_MODEL: "test-decisions" });
+  const db = connect(join(dir, "t.db"));
+  try {
+    const r = await askJev("classify.jev", SAMPLE_ITEMS[0]!, db);
+    assert.equal(r.code, 0);
+    const answers = (JSON.parse(r.stdout) as { answers: Record<string, { choice?: string; confidence?: number; probabilities?: Record<string, number>; noul?: number }> }).answers;
+    assert.deepEqual(answers.type, { choice: "bugfix", confidence: 0.8, probabilities: { bugfix: 0.8, "missing feature": 0.2 } });
+    assert.equal(answers.security?.noul, 0.7);
+    // One request: the item as the input, the choice's criteria as its options, and a predicate for the yes-probability.
+    assert.equal(seen[0]!.url, "/decisions");
+    assert.equal(seen[0]!.auth, "Bearer sk-test-secret");
+    assert.equal(seen[0]!.body.model, "test-decisions");
+    const questions = seen[0]!.body.questions!;
+    assert.deepEqual(questions.map((q) => q.name), ["type", "security", "needs_decision"]);
+    assert.equal(questions[0]!.type, "choice");
+    assert.ok(questions[0]!.choices!.some((c) => c.value === "bugfix"));
+    assert.equal(questions[1]!.type, "predicate");
+    const run = db.prepare("SELECT provider, model, state, input_tokens FROM agent_runs ORDER BY id DESC LIMIT 1").get() as { provider: string; model: string; state: string; input_tokens: number | null };
+    assert.deepEqual({ ...run }, { provider: "decisions", model: "test-decisions", state: "done", input_tokens: null });
+    // The API reports no tokens, so no usage row is invented for it.
+    assert.equal((db.prepare("SELECT COUNT(*) AS n FROM token_usage").get() as { n: number }).n, 0);
+
+    status = 401;
+    const bad = await askDecisionsClassifier({ baseUrl: base, keyFile, model: "test-decisions" }, "{\"state\":{},\"questions\":{}}", 5000);
+    assert.equal(jevFailure(bad)?.kind, "account");
+    status = 503;
+    assert.equal(jevFailure(await askDecisionsClassifier({ baseUrl: base, keyFile, model: "test-decisions" }, "{\"state\":{},\"questions\":{}}", 5000)), null);
+  } finally { restore(); db.close(); server.close(); }
+});
+
+test("the decisions endpoint defaults to its own root and model, and takes the compatible key file when it has none", () => {
+  const d = decisionsConfig({ AUTOCRAFT_COMPATIBLE_KEY_FILE: "/k" });
+  assert.ok("config" in d);
+  assert.equal((d as { config: { baseUrl: string; model: string } }).config.baseUrl, "https://api.openai.com/v1");
+  assert.equal((d as { config: { model: string } }).config.model, "gpt-6-luna");
+  assert.ok("problem" in decisionsConfig({}));
 });
 
 test("a Grep pattern that backtracks catastrophically is stopped instead of holding the event loop", async () => {

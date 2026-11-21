@@ -104,10 +104,11 @@ export function JevLine({ operator }: { operator: boolean }) {
   const q = useQuery<JevStatus>("accounts-jev", (a) => a.accounts.jev());
   if (!q.data) return <ErrorLine error={q.error?.message} />;
   const { enabled, unavailable, provider, model } = q.data;
-  const who = provider === "compatible" ? (model ?? "a configured model") : "Jev";
+  const who = provider === "jev" ? "Jev" : (model ?? "a configured model");
+  const kind = provider === "compatible" ? " (the compatible classifier)" : provider === "decisions" ? " (the decisions endpoint)" : "";
   const line = unavailable
     ? `${who} is unavailable (${unavailable.reason}) since ${clock(unavailable.since)} — the fallback model does that work`
-    : provider === "compatible" ? `${who} answers the typed decisions (the compatible classifier)` : "Jev in use";
+    : provider === "jev" ? "Jev in use" : `${who} answers the typed decisions${kind}`;
   return (
     <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
       <span className="text-ink/60">
@@ -115,7 +116,7 @@ export function JevLine({ operator }: { operator: boolean }) {
       </span>
       {operator && (
         <Button variant="secondary" size="sm" loading={write.busy === "jev"} onClick={() => void write.run("jev", () => api.accounts.setJev({ enabled: !enabled })).then((ok) => ok && q.refetch())} className="max-md:h-11">
-          {enabled ? `Turn ${provider === "compatible" ? "the classifier" : "Jev"} off` : `Turn ${provider === "compatible" ? "the classifier" : "Jev"} on`}
+          {enabled ? `Turn ${provider === "jev" ? "Jev" : "the classifier"} off` : `Turn ${provider === "jev" ? "Jev" : "the classifier"} on`}
         </Button>
       )}
       <ErrorLine error={write.error} className="basis-full" />

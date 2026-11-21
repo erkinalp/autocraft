@@ -11,7 +11,7 @@
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
-import { classifierProvider } from "./compatible.ts";
+import { classifierProvider } from "./classifier.ts";
 import { jevCloudflareConfig } from "./jev-cloudflare.ts";
 import { audit } from "../dash/audit.ts";
 
@@ -36,9 +36,10 @@ export function jevOutage(db: DatabaseSync): JevOutage | null {
 
 const clear = (db: DatabaseSync): void => void db.prepare("DELETE FROM settings WHERE key = ?").run(JEV_UNAVAILABLE_KEY);
 
-/** True when the typed decisions can be answered: the configured classifier model, Workers AI, or an executable `jev` on PATH. */
+/** True when the typed decisions can be answered: the configured classifier (a model or a decisions endpoint), Workers AI, or an executable `jev` on PATH. */
 export function jevInstalled(): boolean {
-  if (classifierProvider().provider === "compatible") return true;
+  const classifier = classifierProvider().provider;
+  if (classifier === "compatible" || classifier === "decisions") return true;
   if (jevCloudflareConfig()) return true;
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
@@ -115,14 +116,15 @@ export function markJevWorking(db: DatabaseSync, startedMs: number): void {
 /**
  * Whether a finished `jev` process failed because Jev is unavailable (as opposed to a timeout, a server error or a bad answer,
  * which are retried): the command is missing, or the API refused the account.
- * The CLI prints `jev: API error status=<N> request_id=...: <message>` or `jev: <message>` on stderr.
+ * The CLI prints `jev: API error status=<N> request_id=...: <message>` or `jev: <message>` on stderr; the API classifiers
+ * print the same line with `classifier:` (src/agents/compatible.ts, src/agents/decisions.ts).
  */
 export function jevFailure(r: { code: number | null; stderr: string }): { kind: "missing" | "account"; reason: string } | null {
   if (r.code === -1 && /ENOENT/.test(r.stderr)) return { kind: "missing", reason: "not installed" };
   // The jev script exits 127 when the interpreter it starts through is missing.
   if (r.code === 127 && /no such file or directory|not found/i.test(r.stderr)) return { kind: "missing", reason: "not installed" };
   if (r.code === 0 || r.code === null || r.code === -1) return null;
-  const line = r.stderr.split("\n").find((l) => l.startsWith("jev: ")) ?? "";
+  const line = r.stderr.split("\n").find((l) => /^(?:jev|classifier|decisions): /.test(l)) ?? "";
   const status = /API error status=(\d+)/.exec(line)?.[1];
   // With a status, the status decides: a 429 "quota" or a 503 "insufficient capacity" is not an account problem.
   if (status !== undefined) return status === "402" ? { kind: "account", reason: "out of credit" } : status === "401" || status === "403" ? { kind: "account", reason: "key rejected" } : null;

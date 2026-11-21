@@ -3,7 +3,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { DatabaseSync } from "node:sqlite";
 import { listAccounts } from "./agents/accounts.ts";
-import { classifierProvider, modelProviderReport } from "./agents/compatible.ts";
+import { classifierProvider } from "./agents/classifier.ts";
+import { modelProviderReport } from "./agents/compatible.ts";
 import { deadlineStops } from "./runner/autopilot.ts";
 import { stepTitle } from "./dash/api/trace.ts";
 import { repoErrors } from "./sync-errors.ts";

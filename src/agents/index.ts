@@ -1,6 +1,7 @@
 // autocraft-server accounts list | set <id> [--label X] [--enabled yes|no] [--max-concurrent N] | jev [N | on | off] | providers | pause [show | --five-hour N --weekly N]
 import { connect } from "../db.ts";
-import { classifierProvider, modelProviderReport } from "./compatible.ts";
+import { classifierProvider } from "./classifier.ts";
+import { modelProviderReport } from "./compatible.ts";
 import { jevEnabled, jevOutage, setJevEnabled } from "./jev.ts";
 import { AccountError, jevParallel, listAccounts, setJevParallel, setUsagePause, updateAccount, usagePause } from "./accounts.ts";
 
@@ -64,9 +65,10 @@ function jev(args: string[]): void {
   }
   console.log(`Classifier calls at once: ${jevParallel(db)}`);
   const c = classifierProvider();
-  const who = c.provider === "compatible" ? c.model : "Jev";
+  const who = c.provider === "compatible" || c.provider === "decisions" ? c.model : "Jev";
   const o = jevOutage(db);
-  console.log(`The typed decisions are answered by ${c.provider === "compatible" ? `the compatible classifier (${who})` : c.provider === "invalid" ? `nothing: ${c.reason}` : "Jev"}`);
+  const by = c.provider === "compatible" ? `the compatible classifier (${who})` : c.provider === "decisions" ? `the decisions endpoint (${who})` : c.provider === "invalid" ? `nothing: ${c.reason}` : "Jev";
+  console.log(`The typed decisions are answered by ${by}`);
   if (o) console.log(`${who} unavailable (${o.reason}) since ${o.since}; the fallback model does its work`);
   else console.log(jevEnabled(db) ? `${who} in use` : `${who} switched off; the fallback model does its work`);
 }
@@ -79,7 +81,9 @@ function providers(): void {
   } else if (m.provider === "invalid") console.log(`Model calls cannot run: ${m.reason}`);
   else console.log("Model calls: Claude accounts (the claude command on this host)");
   const c = classifierProvider();
-  console.log(c.provider === "compatible" ? `Typed decisions: the compatible classifier, ${c.model}` : c.provider === "invalid" ? `Typed decisions cannot run: ${c.reason}` : "Typed decisions: Jev");
+  console.log(c.provider === "compatible" ? `Typed decisions: the compatible classifier, ${c.model}`
+    : c.provider === "decisions" ? `Typed decisions: the decisions endpoint at ${c.config.baseUrl}, ${c.model}`
+    : c.provider === "invalid" ? `Typed decisions cannot run: ${c.reason}` : "Typed decisions: Jev");
 }
 
 function pause(args: string[]): void {

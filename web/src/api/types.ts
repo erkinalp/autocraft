@@ -1683,12 +1683,12 @@ export type AccountLogin = { state: AccountLoginState; url: string | null; messa
 /** Usage levels (%, 1 to 100) at which an account stops taking calls. */
 export type UsagePause = { fiveHour: number; weekly: number };
 /** Whether Jev is in use; `unavailable` says why not (Haiku then does its work) and since when. */
-/** What answers the typed decisions: Jev, or a model of the compatible provider (src/agents/compatible.ts). */
-export type JevStatus = { enabled: boolean; unavailable: { reason: string; since: string } | null; provider: "jev" | "compatible"; model: string | null };
+/** What answers the typed decisions: Jev, a model of the compatible provider, or a Decisions API endpoint. */
+export type JevStatus = { enabled: boolean; unavailable: { reason: string; since: string } | null; provider: "jev" | "compatible" | "decisions"; model: string | null };
 /** The model provider of this host's model calls, and the classifier's, as the environment configures them. */
 export type ProviderStatus = {
   model: { provider: "claude" } | { provider: "compatible"; models: { top: string; mid: string; small: string }; problem: string | null } | { provider: "invalid"; reason: string };
-  classifier: { provider: "jev" } | { provider: "compatible"; model: string } | { provider: "invalid"; reason: string };
+  classifier: { provider: "jev" } | { provider: "compatible"; model: string } | { provider: "decisions"; model: string } | { provider: "invalid"; reason: string };
 };
 export type AccountInput = { label?: string; enabled?: boolean; maxConcurrent?: number };
 
@@ -1700,7 +1700,7 @@ export type AgentRun = {
   stage: number;             // stage number from docs/pipeline.md
   promptId: string;          // prompt registry id
   promptVersion: string;     // registry version or content hash
-  provider: "claude" | "jev" | "compatible";
+  provider: "claude" | "jev" | "compatible" | "decisions";
   model: string;             // e.g. "sonnet", "haiku", "jev"
   accountId: string | null;  // null for Jev
   accountLabel: string | null;

@@ -597,12 +597,15 @@ The pipeline's model calls on this host have two providers: the `claude` CLI und
 | Variable | Meaning |
 |---|---|
 | `AUTOCRAFT_MODEL_PROVIDER` | `claude` (default) or `compatible`. `compatible` sends every model call to the API. |
-| `AUTOCRAFT_CLASSIFIER_PROVIDER` | `jev` (default) or `compatible`. `compatible` sends Jev's typed decisions to the API instead. |
+| `AUTOCRAFT_CLASSIFIER_PROVIDER` | `jev` (default), `compatible` or `decisions`. `compatible` sends Jev's typed decisions to a chat API; `decisions` sends them to a Decisions API endpoint. |
 | `AUTOCRAFT_COMPATIBLE_BASE_URL` | The API root, such as `https://models.example.com/v1`. https, or http on a loopback host for a local server; no user name, password, query or fragment. |
 | `AUTOCRAFT_COMPATIBLE_KEY_FILE` | The key, as one line in a file only its owner may read (`chmod 600`; Windows has no such mode, so it is not checked there). Sent as `Authorization: Bearer`. |
 | `AUTOCRAFT_COMPATIBLE_MODELS` | A JSON object mapping each tier to a model: `{"top":"...","mid":"...","small":"..."}`. Model calls need all three. |
 | `AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL` | The model that answers the typed decisions; default: the `small` model. |
 | `AUTOCRAFT_COMPATIBLE_MAX_TOKENS` | The `max_tokens` of one request (default 16000; `0` sends none). |
+| `AUTOCRAFT_DECISIONS_BASE_URL` | A decisions endpoint's root (default `https://api.openai.com/v1`; it falls back to `AUTOCRAFT_COMPATIBLE_BASE_URL`). `/decisions` is appended. |
+| `AUTOCRAFT_DECISIONS_KEY_FILE` | Its key (default: `AUTOCRAFT_COMPATIBLE_KEY_FILE`), with the same 0600 rule. |
+| `AUTOCRAFT_DECISIONS_MODEL` | Its model (default `gpt-6-luna`, the model the Decisions API serves today). |
 
 A prompt is registered for a model family (`opus`, `sonnet` or `haiku`); the provider maps the family to its tier and the tier to its model, and the agent run records the model that answered. The environment is read on every call, not at start-up, so a corrected value needs no restart and a wrong one is reported on the first call.
 
@@ -617,6 +620,7 @@ A prompt is registered for a model family (`opus`, `sonnet` or `haiku`); the pro
 - No account and no slot: calls are not queued behind the Claude accounts (the pools' own limits apply), and the Accounts page's accounts are listed but not used. In the user-local inference mode the provider is not used at all: model calls go to maintainers' Task Runners, and only the classifier provider applies.
 - `token_usage` keeps the prompt's registered model (the tier) so the Cost page stays comparable; the run records the model that answered. The provider's price is not known here, so `cost_usd` is null for its calls.
 - The classifier answers Jev's request shape, with the same parsers and thresholds. The 0.9/0.8/0.3 thresholds were set for Jev, and a general model's probabilities are not calibrated; a classifier that is switched off, misconfigured or refused makes the fallback model (Haiku) decide, as it does without Jev.
+- A decisions endpoint (`AUTOCRAFT_CLASSIFIER_PROVIDER=decisions`) is the better fit than a chat model for Jev's place: Jev's question object goes to one `POST /decisions` request, each yes-probability becomes a predicate and each choice's criteria become the options, and the typed answers come back as Jev's answers. A refusal, a missing answer or a choice outside the asked options leaves that question unanswered, exactly as Jev answering nothing would. The endpoint reports no tokens, so its runs and usage rows carry no token count and no USD; the cost is the endpoint's own.
 
 **Checking it.** `autocraft-server accounts providers` prints both providers; `GET /api/accounts/providers` returns the same for the Accounts page, which also shows an unreadable key file or an invalid base URL. The health checks report `model-provider` as failed when the environment asks for a provider it cannot supply, and `classifier-provider` as a warning. A key the API rejects is recorded as a classifier account outage (`jev_unavailable`); a model call fails with the provider's status in the call's error.
 

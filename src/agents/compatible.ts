@@ -123,40 +123,22 @@ export function modelProvider(env: NodeJS.ProcessEnv = process.env): ProviderCho
   };
 }
 
-/** What answers Jev's decisions: `jev` (the command or Workers AI, as before) or the compatible API. */
-export type ClassifierChoice =
-  | { provider: "jev" }
-  | { provider: "compatible"; config: CompatibleConfig; model: string }
-  | { provider: "invalid"; reason: string };
-
-export function classifierProvider(env: NodeJS.ProcessEnv = process.env): ClassifierChoice {
-  const which = (envVar(PROVIDER_KEYS.classifier, env) ?? "").trim();
-  if (!which || which === "jev") return { provider: "jev" };
-  if (which !== COMPATIBLE) return { provider: "invalid", reason: `AUTOCRAFT_${PROVIDER_KEYS.classifier} is "${which}"; it must be jev or ${COMPATIBLE}` };
+/** The compatible API as the classifier's provider: its key and root, and the one model that answers. */
+export function compatibleClassifierConfig(env: NodeJS.ProcessEnv = process.env): { config: CompatibleConfig; model: string } | { problem: string } {
   const base = checkBaseUrl((envVar("COMPATIBLE_BASE_URL", env) ?? "").trim());
-  if ("problem" in base) return { provider: "invalid", reason: base.problem };
+  if ("problem" in base) return { problem: base.problem };
   const keyFile = (envVar("COMPATIBLE_KEY_FILE", env) ?? "").trim();
-  if (!keyFile) return { provider: "invalid", reason: "no key file: set AUTOCRAFT_COMPATIBLE_KEY_FILE" };
+  if (!keyFile) return { problem: "no key file: set AUTOCRAFT_COMPATIBLE_KEY_FILE" };
   // The classifier needs one model: its own, or the small tier's. The other tiers are not needed for a classifier-only host.
   const clf = (envVar("COMPATIBLE_CLASSIFIER_MODEL", env) ?? "").trim();
   let model = clf;
   if (!model) {
     const models = checkModels(envVar("COMPATIBLE_MODELS", env) ?? "", false);
-    if ("problem" in models) return { provider: "invalid", reason: models.problem };
+    if ("problem" in models) return { problem: models.problem };
     model = models.models.small ?? "";
   }
-  if (!model || !MODEL_ID.test(model)) return { provider: "invalid", reason: "no model for the classifier: set AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL" };
-  return {
-    provider: "compatible",
-    model,
-    config: { baseUrl: base.url, keyFile, maxTokens: maxTokensOf(env), models: { top: model, mid: model, small: model }, classifierModel: model },
-  };
-}
-
-/** The model a compatible classifier answers with, or null when Jev answers (the CLI, Workers AI, or nothing). */
-export function classifierModel(env: NodeJS.ProcessEnv = process.env): string | null {
-  const c = classifierProvider(env);
-  return c.provider === "compatible" ? c.model : null;
+  if (!model || !MODEL_ID.test(model)) return { problem: "no model for the classifier: set AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL" };
+  return { model, config: { baseUrl: base.url, keyFile, maxTokens: maxTokensOf(env), models: { top: model, mid: model, small: model }, classifierModel: model } };
 }
 
 /** The API's model for a prompt registered for `alias`, or a call failure naming the missing tier. */
@@ -352,7 +334,7 @@ export async function askCompatibleClassifier(cfg: CompatibleConfig, model: stri
     if (!(e instanceof CompatibleError)) throw e;
     const status = /API error status=(\d+)/.exec(e.message)?.[1];
     const message = e.message.replace(/^API error status=\d+: /, "");
-    return { code: 1, stdout: "", stderr: `jev: ${status === undefined ? "" : `API error status=${status}: `}${message}\n` };
+    return { code: 1, stdout: "", stderr: `classifier: ${status === undefined ? "" : `API error status=${status}: `}${message}\n` };
   }
   // The usage field is what the pipeline records. Output that is not an answer is printed as it came, without usage, so
   // the caller records an unreadable answer and asks again, exactly as it does for a `jev ask` that printed no JSON.

@@ -4,7 +4,7 @@
 // usage rows and the error result.
 import type { DatabaseSync } from "node:sqlite";
 import { NoTakerError, poolRoom, repoBatches } from "./call.ts";
-import { classifierModel } from "./compatible.ts";
+import { classifierModel } from "./classifier.ts";
 import { jevAvailable } from "./jev.ts";
 import { jevParallel } from "./accounts.ts";
 import { add, askClaude, askJev, pool, saveUsage, type AskOptions, type LintedReply, type Usage } from "../classify/run.ts";

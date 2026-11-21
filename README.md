@@ -150,6 +150,14 @@ export AUTOCRAFT_CLASSIFIER_PROVIDER=compatible
 export AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL=small-model   # default: the small tier
 ```
 
+or a Decisions API endpoint, whose typed questions are exactly Jev's shape:
+
+```sh
+export AUTOCRAFT_CLASSIFIER_PROVIDER=decisions
+export AUTOCRAFT_DECISIONS_BASE_URL=https://api.openai.com/v1   # the default
+export AUTOCRAFT_DECISIONS_KEY_FILE=/srv/autocraft/config/model-key
+```
+
 `autocraft-server accounts providers`, the Accounts page and the health checks say which provider is configured. What is different from a Claude call — no explorer subagent, no item tools, no images (the two screenshot prompts are refused), no follow-up fix turn, no USD cost — is listed in [Bring your own model](docs/operations.md#bring-your-own-model). The providers are read from the environment on every call, so a wrong base URL or key file is reported rather than worked around.
 
 ### Track repos and sync

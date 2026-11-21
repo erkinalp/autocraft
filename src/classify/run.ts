@@ -10,7 +10,9 @@ import { jevParallel } from "../agents/accounts.ts";
 import { askJevCloudflare, jevCloudflareConfig } from "../agents/jev-cloudflare.ts";
 import { jevAvailable, jevEnv, jevFailure, markJevUnavailable, markJevWorking } from "../agents/jev.ts";
 import { accountConfigDir, itemRepos, NoTakerError, poolRoom, repoBatches, startClaudeRun, type PoolRoom, startCompatibleRun, startJevRun, tryStartFollowUp, isHalt, type Started } from "../agents/call.ts";
-import { askCompatibleClassifier, classifierProvider, CompatibleError, modelForAlias, modelProvider, type CompatibleConfig } from "../agents/compatible.ts";
+import { askCompatibleClassifier, CompatibleError, modelForAlias, modelProvider, type CompatibleConfig } from "../agents/compatible.ts";
+import { askDecisionsClassifier } from "../agents/decisions.ts";
+import { classifierProvider } from "../agents/classifier.ts";
 import { toolRoots } from "../agents/filetools.ts";
 import { runCompatibleCall } from "../agents/model-call.ts";
 import { touchStore, type KeptSession, type SessionAsk } from "../prepush/resume.ts";
@@ -847,14 +849,16 @@ export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: str
   const classifier = classifierProvider();
   if (classifier.provider === "invalid") throw new Error(`the classifier provider is not configured: ${classifier.reason}`);
   const viaApi = classifier.provider === "compatible";
+  const viaDecisions = classifier.provider === "decisions";
   // A model that is not Jev answers, so the run says which model it was; Jev has no model of its own to name.
-  const model = viaApi ? classifier.model : "jev";
-  const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: viaApi ? "compatible" : "jev", model, items: refsOf([item]), prompt: body });
+  const model = viaApi || viaDecisions ? classifier.model : "jev";
+  const runId = startJevRun(db, { promptId: id, promptVersion: promptVersion(id), provider: viaApi ? "compatible" : viaDecisions ? "decisions" : "jev", model, items: refsOf([item]), prompt: body });
   const start = now();
   try {
-    const cf = viaApi ? null : jevCloudflareConfig();
+    const cf = viaApi || viaDecisions ? null : jevCloudflareConfig();
     const timeoutMs = JEV_PROMPTS[id].limits.timeoutSeconds * 1000;
     const r = viaApi ? await askCompatibleClassifier(classifier.config, classifier.model, body, timeoutMs)
+      : viaDecisions ? await askDecisionsClassifier(classifier.config, body, timeoutMs)
       : cf ? await askJevCloudflare(cf, body, timeoutMs) : await runner("jev", JEV_ARGS, body, undefined, timeoutMs, jevEnv(), undefined, true);
     let tokens: { input: number; output: number; cacheRead: number; cacheWrite: number } | undefined;
     try {
@@ -862,15 +866,17 @@ export async function askJev(id: JevPromptId, item: Item | DupePair | { ref: str
       if (j.usage) tokens = { input: j.usage.input_tokens ?? 0, output: j.usage.output_tokens ?? 0, cacheRead: 0, cacheWrite: 0 };
     } catch { /* the caller reports an unreadable answer */ }
     // Jev's flat price is Jev's: another model's tokens have no cost this host knows (the provider bills them).
-    const cost = viaApi || !tokens ? null : tokens.input * JEV_USD_PER_INPUT_TOKEN;
+    const cost = viaApi || viaDecisions || !tokens ? null : tokens.input * JEV_USD_PER_INPUT_TOKEN;
     // Jev's registered model id is what its usage rows have always named; a classifier that stands in for Jev names itself.
-    const usageModel = viaApi ? model : JEV_PROMPTS[id].models[0]!;
+    const usageModel = viaApi || viaDecisions ? model : JEV_PROMPTS[id].models[0]!;
     // A step that sums its retries into one row (usage option of runModelStep) saves nothing here.
     if (tokens && perCallUsage) saveUsage(db, String(runId), "jev", id.split(".")[0]!, usageModel, 1, { ...tokens, cost }, start, now());
     const outage = jevFailure(r);
     if (outage) markJevUnavailable(db, outage.kind, outage.reason);
     else if (r.code === 0) markJevWorking(db, Date.parse(start));
-    if (r.code === 0 && tokens) finishRun(db, runId, { state: "done", tokens, costUsd: cost, summary: "answered", output: r.stdout });
+    // The Decisions API reports no tokens: its answer is a done run without a token count, not an unreadable one.
+    const answered = r.code === 0 && (tokens !== undefined || viaDecisions);
+    if (answered) finishRun(db, runId, { state: "done", ...(tokens && { tokens }), costUsd: cost, summary: "answered", output: r.stdout });
     else finishRun(db, runId, { state: "failed", error: scrubError(`${exitClass(r.code)} ${r.stderr}`), summary: r.code === 0 ? "unreadable answer" : exitClass(r.code), output: r.stdout });
     return r;
   } catch (e) {

@@ -5,7 +5,8 @@ import { fileURLToPath } from "node:url";
 import type { DatabaseSync } from "node:sqlite";
 import type { PromptsReport } from "../../../web/src/api/types.ts";
 import { promptsReport, type ProviderMode } from "../../prompts/index.ts";
-import { classifierProvider, modelProvider } from "../../agents/compatible.ts";
+import { modelProvider } from "../../agents/compatible.ts";
+import { classifierProvider } from "../../agents/classifier.ts";
 import { inferenceMode } from "../../remote/mode.ts";
 
 // Read when the server loads its code, so a later checkout without a restart
@@ -28,9 +29,10 @@ export function prompts(db: DatabaseSync): PromptsReport {
   // Which provider answers now, so the page describes the calls this host makes, not the default ones. In the user-local
   // mode neither provider runs here: helpers run the calls, with the command shown.
   if (inferenceMode(db) === "user-local") return promptsReport(COMMIT);
+  const classifier = classifierProvider().provider;
   const mode: ProviderMode = {
     model: modelProvider().provider === "compatible" ? "compatible" : "claude",
-    classifier: classifierProvider().provider === "compatible" ? "compatible" : "jev",
+    classifier: classifier === "compatible" || classifier === "decisions" ? classifier : "jev",
   };
   return promptsReport(COMMIT, mode);
 }
