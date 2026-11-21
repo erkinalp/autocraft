@@ -1,8 +1,8 @@
-// Claude account controls: usage bars, pause levels, the Jev switch and the label and concurrency form.
+// Claude account controls: usage bars, pause levels, the classifier and model lines, and the label and concurrency form.
 import { useEffect, useState } from "react";
 import { PencilSimpleIcon } from "@phosphor-icons/react";
 import { useApi, useQuery } from "../../api/client";
-import type { ClaudeAccount, JevStatus, UsagePause } from "../../api/types";
+import type { ClaudeAccount, JevStatus, ProviderStatus, UsagePause } from "../../api/types";
 import { clock, nowMs, span } from "../../lib/format";
 import { Button } from "../../ui/atoms/Button";
 import { cn } from "../../ui/cn";
@@ -93,23 +93,52 @@ export function PauseLevels({ operator }: { operator: boolean }) {
   );
 }
 
+/**
+ * The classifier line: Jev, or the model of the compatible provider that answers its typed decisions instead. The switch
+ * turns the classifier off in either case, and the fallback model then decides alone; the line says so rather than
+ * looking healthy.
+ */
 export function JevLine({ operator }: { operator: boolean }) {
   const api = useApi();
   const write = useWrite();
   const q = useQuery<JevStatus>("accounts-jev", (a) => a.accounts.jev());
   if (!q.data) return <ErrorLine error={q.error?.message} />;
-  const { enabled, unavailable } = q.data;
+  const { enabled, unavailable, provider, model } = q.data;
+  const who = provider === "compatible" ? (model ?? "a configured model") : "Jev";
+  const line = unavailable
+    ? `${who} is unavailable (${unavailable.reason}) since ${clock(unavailable.since)} — the fallback model does that work`
+    : provider === "compatible" ? `${who} answers the typed decisions (the compatible classifier)` : "Jev in use";
   return (
     <div className="mb-3 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs">
       <span className="text-ink/60">
-        {unavailable ? `Jev unavailable (${unavailable.reason}) since ${clock(unavailable.since)} — Haiku does Jev's work` : "Jev in use"}
+        {line}
       </span>
       {operator && (
         <Button variant="secondary" size="sm" loading={write.busy === "jev"} onClick={() => void write.run("jev", () => api.accounts.setJev({ enabled: !enabled })).then((ok) => ok && q.refetch())} className="max-md:h-11">
-          {enabled ? "Turn Jev off" : "Turn Jev on"}
+          {enabled ? `Turn ${provider === "compatible" ? "the classifier" : "Jev"} off` : `Turn ${provider === "compatible" ? "the classifier" : "Jev"} on`}
         </Button>
       )}
       <ErrorLine error={write.error} className="basis-full" />
+    </div>
+  );
+}
+
+/**
+ * Which provider makes this host's model calls, and the classifier's, as its environment configures them. A compatible
+ * provider with a problem (an unreadable key file, an invalid base URL) says so here: without a line, a call would only
+ * fail later, in a job log an operator may not read.
+ */
+export function ProviderLine() {
+  const q = useQuery<ProviderStatus>("accounts-providers", (a) => a.accounts.providers());
+  if (!q.data) return <ErrorLine error={q.error?.message} />;
+  const { model, classifier } = q.data;
+  const modelLine = model.provider === "compatible"
+    ? `Model calls run on the compatible provider: ${model.models.top}, ${model.models.mid} and ${model.models.small} for the top, mid and small tiers${model.problem ? ` — ${model.problem}` : ""}`
+    : model.provider === "invalid" ? `Model calls cannot run: ${model.reason}` : "Model calls run on Claude accounts";
+  return (
+    <div className="mb-3 space-y-1 text-xs text-ink/60">
+      <p>{modelLine}</p>
+      {classifier.provider === "invalid" && <p>The typed decisions cannot run: {classifier.reason}</p>}
     </div>
   );
 }

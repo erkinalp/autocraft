@@ -577,7 +577,7 @@ autocraft-server tasks enqueue-test --env-requires linux --repo NAME --sha SHA
 
 ### Claude accounts
 
-Claude calls run under accounts that an operator enabled. Which accounts exist on a machine comes from files outside the repository, named by environment variables that the runner, the dashboard and the CLI all read:
+Claude calls run under accounts that an operator enabled (unless the compatible provider below makes them, in which case the accounts are not used). Which accounts exist on a machine comes from files outside the repository, named by environment variables that the runner, the dashboard and the CLI all read:
 
 | Variable | Meaning |
 |---|---|
@@ -589,6 +589,36 @@ Claude calls run under accounts that an operator enabled. Which accounts exist o
 Example: `AUTOCRAFT_ACCOUNTS=/path/to/accounts.json`, `AUTOCRAFT_USAGE_DIR=/path/to/usage`, `AUTOCRAFT_ACCOUNTS_ROOT=/path/to/accounts`.
 
 Each account in the file gets a row (disabled, labelled with its id) the first time anything lists accounts. Operators set the label, the switch and the number of calls at once on the Accounts page or with `autocraft-server accounts list` and `autocraft-server accounts set <id> [--label X] [--enabled yes|no] [--max-concurrent N]` (1 to 100; recorded as `cli`). Jev has no accounts; its calls at once are the `jev_parallel` setting (default 4), changed with `autocraft-server accounts jev [N]`. Claude calls in flight are limited only by the accounts' free slots; waiting calls take freed slots by priority class (security, then the path to merge, then the rest). An operator can also give an account a long-lived token (*Long-lived token* on the Accounts page, stored as `oauth-token` in the account's config directory, mode 0600): calls on that account use it instead of the login's short-lived token, so sandboxed calls never wait for a token refresh. Allocation and pauses are described in [docs/pipeline.md](docs/pipeline.md#claude-accounts-and-agent-runs).
+
+### Bring your own model
+
+The pipeline's model calls on this host have two providers: the `claude` CLI under the accounts above (the default), and a chat API that speaks the widely used `/chat/completions` JSON shape. The API provider is configured by environment variables only; no key, base URL or model of it is stored in the database, the API or the UI.
+
+| Variable | Meaning |
+|---|---|
+| `AUTOCRAFT_MODEL_PROVIDER` | `claude` (default) or `compatible`. `compatible` sends every model call to the API. |
+| `AUTOCRAFT_CLASSIFIER_PROVIDER` | `jev` (default) or `compatible`. `compatible` sends Jev's typed decisions to the API instead. |
+| `AUTOCRAFT_COMPATIBLE_BASE_URL` | The API root, such as `https://models.example.com/v1`. https, or http on a loopback host for a local server; no user name, password, query or fragment. |
+| `AUTOCRAFT_COMPATIBLE_KEY_FILE` | The key, as one line in a file only its owner may read (`chmod 600`; Windows has no such mode, so it is not checked there). Sent as `Authorization: Bearer`. |
+| `AUTOCRAFT_COMPATIBLE_MODELS` | A JSON object mapping each tier to a model: `{"top":"...","mid":"...","small":"..."}`. Model calls need all three. |
+| `AUTOCRAFT_COMPATIBLE_CLASSIFIER_MODEL` | The model that answers the typed decisions; default: the `small` model. |
+| `AUTOCRAFT_COMPATIBLE_MAX_TOKENS` | The `max_tokens` of one request (default 16000; `0` sends none). |
+
+A prompt is registered for a model family (`opus`, `sonnet` or `haiku`); the provider maps the family to its tier and the tier to its model, and the agent run records the model that answered. The environment is read on every call, not at start-up, so a corrected value needs no restart and a wrong one is reported on the first call.
+
+**A call.** A prompt without a checkout is one request: the prompt's fixed text as the system message and the item data as the user message, exactly the split the `claude` call makes. A prompt with a checkout (the same condition: the stage passes a checkout and the prompt registers a sandbox) keeps its tools in a loop of at most the prompt's `maxTurns`: `Read`, `Grep` and `Glob`, the names the prompt text already uses, plus `mcp__build__check` for the stages that give the call a build tool. The paths are the sandbox's: `/repo`, `/repos/<name>`, `/repo-docs` and `/reference`. Each is resolved to its real path and must stay inside the directory it names, so a symlink out of a checkout is refused as it would dangle inside a sandbox mount. `Read` shows text with line numbers; a binary file (an image, a PDF) is refused with that reason. `Grep` runs the model's regular expression in a worker thread that is stopped after 5 seconds (`src/agents/grep-worker.ts`), because repository text can suggest a pattern that would otherwise hold the service's event loop; `Glob` and `Grep` walk at most 20000 files a call. A tool the provider does not have answers with what to use instead: `Agent` (the workspace explorer) is not available, and the model searches with Grep instead.
+
+**What is different from a Claude call.**
+
+- No bubblewrap sandbox and no `claude` binary: this host reads the files, and the read is a plain file access under the confinement above. Nothing writes: no shell, no build, no subagent.
+- No item tools (`mcp__items__*`) and no explorer subagent; a workspace call still reads `/repos/<name>` directly.
+- Images cannot be read. The two prompts that read them back (`verify.screenshot` and `verify.compare`, which the Screenshots feature plans) are refused: the run records `needs images` and the call fails, rather than a model guessing from words. `Read` refuses any other binary file with its reason, and the reference pages' pictures are therefore unreadable too (their text pages are not).
+- No follow-up fix turn: a lint problem repeats the call, up to the step's attempts. The check reminder that asks for a missing clippy run is not sent; the prompt's own rule still asks the model to run the build tool.
+- No account and no slot: calls are not queued behind the Claude accounts (the pools' own limits apply), and the Accounts page's accounts are listed but not used. In the user-local inference mode the provider is not used at all: model calls go to maintainers' Task Runners, and only the classifier provider applies.
+- `token_usage` keeps the prompt's registered model (the tier) so the Cost page stays comparable; the run records the model that answered. The provider's price is not known here, so `cost_usd` is null for its calls.
+- The classifier answers Jev's request shape, with the same parsers and thresholds. The 0.9/0.8/0.3 thresholds were set for Jev, and a general model's probabilities are not calibrated; a classifier that is switched off, misconfigured or refused makes the fallback model (Haiku) decide, as it does without Jev.
+
+**Checking it.** `autocraft-server accounts providers` prints both providers; `GET /api/accounts/providers` returns the same for the Accounts page, which also shows an unreadable key file or an invalid base URL. The health checks report `model-provider` as failed when the environment asks for a provider it cannot supply, and `classifier-provider` as a warning. A key the API rejects is recorded as a classifier account outage (`jev_unavailable`); a model call fails with the provider's status in the call's error.
 
 ### Adding a step
 

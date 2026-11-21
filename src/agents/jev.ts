@@ -4,10 +4,14 @@
 // - Not installed (the `jev` command cannot start): checked on every pass, cheap, until the command exists.
 // - The account fails (out of credit, missing or rejected key): tried again on the first pass an hour after the last failure.
 //
+// The typed decisions can also be answered by the compatible provider's model instead of Jev (src/agents/compatible.ts):
+// then Jev counts as installed, the request and its parsers are unchanged, and only the model that answers differs.
+//
 // The state is one settings row, settings.jev_unavailable, shown on the Accounts page.
 import { accessSync, constants } from "node:fs";
 import { delimiter, join } from "node:path";
 import type { DatabaseSync } from "node:sqlite";
+import { classifierProvider } from "./compatible.ts";
 import { jevCloudflareConfig } from "./jev-cloudflare.ts";
 import { audit } from "../dash/audit.ts";
 
@@ -32,8 +36,9 @@ export function jevOutage(db: DatabaseSync): JevOutage | null {
 
 const clear = (db: DatabaseSync): void => void db.prepare("DELETE FROM settings WHERE key = ?").run(JEV_UNAVAILABLE_KEY);
 
-/** True when Jev can be reached: Cloudflare Workers AI is configured, or an executable `jev` is on PATH. */
+/** True when the typed decisions can be answered: the configured classifier model, Workers AI, or an executable `jev` on PATH. */
 export function jevInstalled(): boolean {
+  if (classifierProvider().provider === "compatible") return true;
   if (jevCloudflareConfig()) return true;
   for (const dir of (process.env.PATH ?? "").split(delimiter)) {
     if (!dir) continue;
@@ -65,6 +70,8 @@ export function setJevEnabled(db: DatabaseSync, on: boolean, by: string): void {
 /** Whether a pass may call Jev now, without writing: for readers such as the planner. */
 export function jevUsable(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   if (!jevEnabled(db)) return false;
+  // A classifier provider that is configured wrongly cannot answer either.
+  if (classifierProvider().provider === "invalid") return false;
   const o = jevOutage(db);
   if (!o) return true;
   if (o.kind === "missing") return jevInstalled();
@@ -76,6 +83,14 @@ export function jevUsable(db: DatabaseSync, nowMs: number = Date.now()): boolean
 export function jevAvailable(db: DatabaseSync, nowMs: number = Date.now()): boolean {
   if (!jevEnabled(db)) {
     if (jevOutage(db)?.kind !== "off") put(db, JEV_UNAVAILABLE_KEY, JSON.stringify({ kind: "off", reason: "switched off", since: new Date(nowMs).toISOString(), at: new Date(nowMs).toISOString() } satisfies JevOutage));
+    return false;
+  }
+  // A classifier provider that is configured wrongly cannot answer: the fallback model decides meanwhile, and the reason
+  // is recorded as an outage once, not on every item of a pass.
+  const classifier = classifierProvider();
+  if (classifier.provider === "invalid") {
+    const cur = jevOutage(db);
+    if (cur?.kind !== "missing" || cur.reason !== classifier.reason) markJevUnavailable(db, "missing", classifier.reason, nowMs);
     return false;
   }
   const usable = jevUsable(db, nowMs), o = jevOutage(db);

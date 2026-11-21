@@ -2,9 +2,10 @@
 // only operators change an account (audited as `account-change`). The box
 // config's directories never reach a response: accounts are returned by id and label.
 import type { DatabaseSync } from "node:sqlite";
-import type { AgentRunFilter, AgentRunState, ClaudeAccount, JevStatus } from "../../../web/src/api/types.ts";
+import type { AgentRunFilter, AgentRunState, ClaudeAccount, JevStatus, ProviderStatus } from "../../../web/src/api/types.ts";
 import { AccountError, listAccounts, setUsagePause, updateAccount, usagePause } from "../../agents/accounts.ts";
 import { jevEnabled, jevOutage, setJevEnabled } from "../../agents/jev.ts";
+import { classifierProvider, modelProviderReport } from "../../agents/compatible.ts";
 import { addAccount, beginLogin, beginToken, refreshNow, removeToken, sendCode, sendTokenCode, signOut, stopLogin, stopToken } from "../../agents/manage.ts";
 import { getRun, listRuns, rates as ratesOf, RunQueryError } from "../../agents/runs.ts";
 import { HttpError } from "../server/util.ts";
@@ -36,7 +37,25 @@ export const putPause = (db: DatabaseSync, req: Req) => wrap(() => setUsagePause
 
 export const getJev = (db: DatabaseSync): JevStatus => {
   const o = jevOutage(db);
-  return { enabled: jevEnabled(db), unavailable: o ? { reason: o.reason, since: o.since } : null };
+  const c = classifierProvider();
+  return {
+    enabled: jevEnabled(db),
+    unavailable: o ? { reason: o.reason, since: o.since } : null,
+    provider: c.provider === "compatible" ? "compatible" : "jev",
+    model: c.provider === "compatible" ? c.model : null,
+  };
+};
+
+/** The model provider and the classifier's, as configured now. Nothing here reads a key or a URL's path. */
+export const getProviders = (): ProviderStatus => {
+  const m = modelProviderReport();
+  const c = classifierProvider();
+  return {
+    model: m.provider === "compatible" ? { provider: "compatible", models: { top: m.models.top, mid: m.models.mid, small: m.models.small }, problem: m.problem }
+      : m.provider === "invalid" ? { provider: "invalid", reason: m.reason } : { provider: "claude" },
+    classifier: c.provider === "compatible" ? { provider: "compatible", model: c.model }
+      : c.provider === "invalid" ? { provider: "invalid", reason: c.reason } : { provider: "jev" },
+  };
 };
 export const putJev = (db: DatabaseSync, req: Req) => wrap(() => {
   const enabled = (req.json as { enabled?: unknown } | null)?.enabled;
