@@ -154,9 +154,11 @@ export async function runModelStep<I, V, C = void>(db: DatabaseSync, step: Claud
     const u = opts.usage;
     const total = sizeOf(step, input);
     const items = u.items ? u.items(ok, total, rest === undefined ? 0 : sizeOf(step, rest)) : total - (rest === undefined ? 0 : sizeOf(step, rest));
-    // A typed-decision step answered by a compatible classifier is recorded as that model, and Jev's flat price is not applied to it.
+    // The row names the model that answered: the registered alias for a Claude call (or Jev's own id), the harness's
+    // reported model when it differs (the compatible provider, and a Task Runner's own model), and a compatible
+    // classifier's model for a typed decision. Jev's flat price is not applied to a classifier that is not Jev.
     const typed = step.provider === "jev" ? classifierModel() : null;
-    const model = u.model ?? typed ?? reg.models[0]!;
+    const model = u.model ?? typed ?? ran ?? reg.models[0]!;
     const saved = step.provider === "jev" && typed === null ? { ...usage, cost: usage.input * JEV_USD_PER_INPUT_TOKEN } : usage;
     if (u.keepEarlier) db.prepare("UPDATE main.token_usage SET agent = agent || '@' || COALESCE(started_at, '') WHERE run_id = ? AND agent = ?").run(u.run, u.agent);
     saveUsage(db, u.run, u.agent, u.stage, model, items, saved, start, new Date().toISOString());

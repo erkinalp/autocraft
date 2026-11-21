@@ -9,6 +9,8 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import { test } from "node:test";
 import { askClaude, askJev } from "../src/classify/run.ts";
+import { runModelStep } from "../src/agents/step.ts";
+import { textStep } from "../src/agents/steps.ts";
 import { askCompatibleClassifier, checkBaseUrl, modelProvider, readKey } from "../src/agents/compatible.ts";
 import { classifierProvider } from "../src/agents/classifier.ts";
 import { askDecisionsClassifier, decisionsConfig, jevAnswers, wireQuestions } from "../src/agents/decisions.ts";
@@ -325,6 +327,21 @@ test("Glob names a file under the directory searched, and a hostile pattern is m
   // The pattern that makes a regular expression backtrack exponentially: the matcher answers at once.
   assert.equal(globMatches("*a".repeat(30) + "b", "a".repeat(200)), false);
   assert.equal(globMatches("src/**/b.ts", "src/deep/b.ts"), true);
+});
+
+test("the usage row names the model that answered, not the alias the registry asked for", async () => {
+  const dir = mkdtempSync(join(SCRATCH, "compat-usage-model-"));
+  const api = await stubApi([() => answer("a summary")]);
+  const restore = providerEnv(dir, api.url);
+  const db = connect(join(dir, "t.db"));
+  try {
+    // `verify.summary` is registered for "haiku"; the provider's small tier is "test-small".
+    const r = await runModelStep(db, textStep("verify.summary"), [{ ref: "app#1" }] as never, { usage: { run: "r1", agent: "a", stage: "verify-collect" } });
+    assert.equal(r.ok, true);
+    const row = db.prepare("SELECT model, cost_usd FROM token_usage WHERE run_id = 'r1'").get() as { model: string; cost_usd: number | null };
+    assert.equal(row.model, "test-small");
+    assert.equal(row.cost_usd, null);
+  } finally { restore(); api.close(); db.close(); }
 });
 
 test("a sandboxed call that fails after a turn keeps that turn's tokens on the failed run", async () => {
